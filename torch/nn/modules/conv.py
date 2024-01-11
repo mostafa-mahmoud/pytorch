@@ -14,7 +14,8 @@ from torch._torch_docs import reproducibility_notes
 from ..common_types import _size_1_t, _size_2_t, _size_3_t
 from typing import Optional, List, Tuple, Union
 
-__all__ = ['Conv1d', 'Conv2d', 'Conv3d', 'ConvTranspose1d', 'ConvTranspose2d', 'ConvTranspose3d',
+__all__ = ['ChannelsLastConv1d', 'ChannelsLastConv2d', 'ChannelsLastConv3d',
+           'Conv1d', 'Conv2d', 'Conv3d', 'ConvTranspose1d', 'ConvTranspose2d', 'ConvTranspose3d',
            'LazyConv1d', 'LazyConv2d', 'LazyConv3d', 'LazyConvTranspose1d', 'LazyConvTranspose2d',
            'LazyConvTranspose3d']
 
@@ -1600,3 +1601,366 @@ class LazyConvTranspose3d(_LazyConvXdMixin, ConvTranspose3d):  # type: ignore[mi
 
     def _get_num_spatial_dims(self) -> int:
         return 3
+
+
+
+convolution_notes_channels_last = \
+    {"groups_note": r"""* :attr:`groups` controls the connections between inputs and outputs.
+      :attr:`in_channels` and :attr:`out_channels` must both be divisible by
+      :attr:`groups`. For example,
+
+        * At groups=1, all inputs are convolved to all outputs.
+        * At groups=2, the operation becomes equivalent to having two conv
+          layers side by side, each seeing half the input channels
+          and producing half the output channels, and both subsequently
+          concatenated.
+        * At groups= :attr:`in_channels`, each input channel is convolved with
+          its own set of filters (of size
+          :math:`\frac{\text{out\_channels}}{\text{in\_channels}}`).""",
+
+        "depthwise_separable_note": r"""When `groups == in_channels` and `out_channels == K * in_channels`,
+        where `K` is a positive integer, this operation is also known as a "depthwise convolution".
+
+        In other words, for an input of size :math:`(N, L_{in}, C_{in})`,
+        a depthwise convolution with a depthwise multiplier `K` can be performed with the arguments
+        :math:`(C_\text{in}=C_\text{in}, C_\text{out}=C_\text{in} \times \text{K}, ..., \text{groups}=C_\text{in})`."""}  # noqa: B950
+
+
+
+class ChannelsLastConv1d(Conv1d):
+    __doc__ = r"""Applies a 1D convolution over an input signal composed of several input
+    planes. This implementation uses channel last implementation, which assumes
+    that the last dimension of the input and output tensors is the one corresponding to channels.
+
+    In the simplest case, the output value of the layer with input size
+    :math:`(N, L, C_{\text{in}})` and output :math:`(N, L_{\text{out}}, C_{\text{out}})` can be
+    precisely described as:
+
+    .. math::
+        \text{out}(N_i, C_{\text{out}_j}) = \text{bias}(C_{\text{out}_j}) +
+        \sum_{k = 0}^{C_{in} - 1} \text{weight}(C_{\text{out}_j}, k)
+        \star \text{input}(N_i, k)
+
+    where :math:`\star` is the valid `cross-correlation`_ operator,
+    :math:`N` is a batch size, :math:`C` denotes a number of channels,
+    :math:`L` is a length of signal sequence.
+    """ + r"""
+
+    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.
+
+    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.
+
+    * :attr:`stride` controls the stride for the cross-correlation, a single
+      number or a one-element tuple.
+
+    * :attr:`padding` controls the amount of padding applied to the input. It
+      can be either a string {{'valid', 'same'}} or a tuple of ints giving the
+      amount of implicit padding applied on both sides.
+
+    * :attr:`dilation` controls the spacing between the kernel points; also
+      known as the à trous algorithm. It is harder to describe, but this `link`_
+      has a nice visualization of what :attr:`dilation` does.
+
+    {groups_note}
+
+    Note:
+        {depthwise_separable_note}
+    Note:
+        {cudnn_reproducibility_note}
+
+    Note:
+        ``padding='valid'`` is the same as no padding. ``padding='same'`` pads
+        the input so the output has the shape as the input. However, this mode
+        doesn't support any stride values other than 1.
+
+    Note:
+        This module supports complex data types i.e. ``complex32, complex64, complex128``.
+
+    Args:
+        in_channels (int): Number of channels in the input image
+        out_channels (int): Number of channels produced by the convolution
+        kernel_size (int or tuple): Size of the convolving kernel
+        stride (int or tuple, optional): Stride of the convolution. Default: 1
+        padding (int, tuple or str, optional): Padding added to both sides of
+            the input. Default: 0
+        padding_mode (str, optional): ``'zeros'``, ``'reflect'``,
+            ``'replicate'`` or ``'circular'``. Default: ``'zeros'``
+        dilation (int or tuple, optional): Spacing between kernel
+            elements. Default: 1
+        groups (int, optional): Number of blocked connections from input
+            channels to output channels. Default: 1
+        bias (bool, optional): If ``True``, adds a learnable bias to the
+            output. Default: ``True``
+
+    """.format(**reproducibility_notes, **convolution_notes_channels_last) + r"""
+
+    Shape:
+        - Input: :math:`(N, L_{in}, C_{in})` or :math:`(L_{in}, C_{in})`
+        - Output: :math:`(N, L_{out}, C_{out})` or :math:`(L_{out}, C_{out})`, where
+
+          .. math::
+              L_{out} = \left\lfloor\frac{L_{in} + 2 \times \text{padding} - \text{dilation}
+                        \times (\text{kernel\_size} - 1) - 1}{\text{stride}} + 1\right\rfloor
+
+    Attributes:
+        weight (Tensor): the learnable weights of the module of shape
+            :math:`(\text{out\_channels},
+            \frac{\text{in\_channels}}{\text{groups}}, \text{kernel\_size})`.
+            The values of these weights are sampled from
+            :math:`\mathcal{U}(-\sqrt{k}, \sqrt{k})` where
+            :math:`k = \frac{groups}{C_\text{in} * \text{kernel\_size}}`
+        bias (Tensor):   the learnable bias of the module of shape
+            (out_channels). If :attr:`bias` is ``True``, then the values of these weights are
+            sampled from :math:`\mathcal{U}(-\sqrt{k}, \sqrt{k})` where
+            :math:`k = \frac{groups}{C_\text{in} * \text{kernel\_size}}`
+
+    Examples::
+
+        >>> m = nn.ChannelsLastConv1d(16, 33, 3, stride=2)
+        >>> input = torch.randn(20, 50, 16)
+        >>> output = m(input)
+
+    .. _cross-correlation:
+        https://en.wikipedia.org/wiki/Cross-correlation
+
+    .. _link:
+        https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md
+    """
+
+    def _conv_forward(self, input: Tensor, weight: Tensor, bias: Optional[Tensor]):
+        _input = input.permute(0, 2, 1)
+        return super()._conv_forward(_input, weight, bias).permute(0, 2, 1)
+
+
+class ChannelsLastConv2d(Conv2d):
+    __doc__ = r"""Applies a 2D convolution over an input signal composed of several input
+    planes. This implementation uses channel last implementation, which assumes
+    that the last dimension of the input and output tensors is the one corresponding to channels.
+
+    In the simplest case, the output value of the layer with input size
+    :math:`(N, H, W, C_{\text{in}})` and output :math:`(N, H_{\text{out}}, W_{\text{out}}, C_{\text{out}})`
+    can be precisely described as:
+
+    .. math::
+        \text{out}(N_i, C_{\text{out}_j}) = \text{bias}(C_{\text{out}_j}) +
+        \sum_{k = 0}^{C_{\text{in}} - 1} \text{weight}(C_{\text{out}_j}, k) \star \text{input}(N_i, k)
+
+
+    where :math:`\star` is the valid 2D `cross-correlation`_ operator,
+    :math:`N` is a batch size, :math:`C` denotes a number of channels,
+    :math:`H` is a height of input planes in pixels, and :math:`W` is
+    width in pixels.
+    """ + r"""
+
+    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.
+
+    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.
+
+    * :attr:`stride` controls the stride for the cross-correlation, a single
+      number or a tuple.
+
+    * :attr:`padding` controls the amount of padding applied to the input. It
+      can be either a string {{'valid', 'same'}} or an int / a tuple of ints giving the
+      amount of implicit padding applied on both sides.
+
+    * :attr:`dilation` controls the spacing between the kernel points; also
+      known as the à trous algorithm. It is harder to describe, but this `link`_
+      has a nice visualization of what :attr:`dilation` does.
+
+    {groups_note}
+
+    The parameters :attr:`kernel_size`, :attr:`stride`, :attr:`padding`, :attr:`dilation` can either be:
+
+        - a single ``int`` -- in which case the same value is used for the height and width dimension
+        - a ``tuple`` of two ints -- in which case, the first `int` is used for the height dimension,
+          and the second `int` for the width dimension
+
+    Note:
+        {depthwise_separable_note}
+
+    Note:
+        {cudnn_reproducibility_note}
+
+    Note:
+        ``padding='valid'`` is the same as no padding. ``padding='same'`` pads
+        the input so the output has the shape as the input. However, this mode
+        doesn't support any stride values other than 1.
+
+    Note:
+        This module supports complex data types i.e. ``complex32, complex64, complex128``.
+
+    Args:
+        in_channels (int): Number of channels in the input image
+        out_channels (int): Number of channels produced by the convolution
+        kernel_size (int or tuple): Size of the convolving kernel
+        stride (int or tuple, optional): Stride of the convolution. Default: 1
+        padding (int, tuple or str, optional): Padding added to all four sides of
+            the input. Default: 0
+        padding_mode (str, optional): ``'zeros'``, ``'reflect'``,
+            ``'replicate'`` or ``'circular'``. Default: ``'zeros'``
+        dilation (int or tuple, optional): Spacing between kernel elements. Default: 1
+        groups (int, optional): Number of blocked connections from input
+            channels to output channels. Default: 1
+        bias (bool, optional): If ``True``, adds a learnable bias to the
+            output. Default: ``True``
+    """.format(**reproducibility_notes, **convolution_notes_channels_last) + r"""
+
+    Shape:
+        - Input: :math:`(N, H_{in}, W_{in}, C_{in})` or :math:`(H_{in}, W_{in}, C_{in})`
+        - Output: :math:`(N, H_{out}, W_{out}, C_{out})` or :math:`(H_{out}, W_{out}, C_{out})`, where
+
+          .. math::
+              H_{out} = \left\lfloor\frac{H_{in}  + 2 \times \text{padding}[0] - \text{dilation}[0]
+                        \times (\text{kernel\_size}[0] - 1) - 1}{\text{stride}[0]} + 1\right\rfloor
+
+          .. math::
+              W_{out} = \left\lfloor\frac{W_{in}  + 2 \times \text{padding}[1] - \text{dilation}[1]
+                        \times (\text{kernel\_size}[1] - 1) - 1}{\text{stride}[1]} + 1\right\rfloor
+
+    Attributes:
+        weight (Tensor): the learnable weights of the module of shape
+            :math:`(\text{out\_channels}, \frac{\text{in\_channels}}{\text{groups}},`
+            :math:`\text{kernel\_size[0]}, \text{kernel\_size[1]})`.
+            The values of these weights are sampled from
+            :math:`\mathcal{U}(-\sqrt{k}, \sqrt{k})` where
+            :math:`k = \frac{groups}{C_\text{in} * \prod_{i=0}^{1}\text{kernel\_size}[i]}`
+        bias (Tensor):   the learnable bias of the module of shape
+            (out_channels). If :attr:`bias` is ``True``,
+            then the values of these weights are
+            sampled from :math:`\mathcal{U}(-\sqrt{k}, \sqrt{k})` where
+            :math:`k = \frac{groups}{C_\text{in} * \prod_{i=0}^{1}\text{kernel\_size}[i]}`
+
+    Examples:
+
+        >>> # With square kernels and equal stride
+        >>> m = nn.ChannelsLastConv2d(16, 33, 3, stride=2)
+        >>> # non-square kernels and unequal stride and with padding
+        >>> m = nn.ChannelsLastConv2d(16, 33, (3, 5), stride=(2, 1), padding=(4, 2))
+        >>> # non-square kernels and unequal stride and with padding and dilation
+        >>> m = nn.ChannelsLastConv2d(16, 33, (3, 5), stride=(2, 1), padding=(4, 2), dilation=(3, 1))
+        >>> input = torch.randn(20, 50, 100, 16)
+        >>> output = m(input)
+
+    .. _cross-correlation:
+        https://en.wikipedia.org/wiki/Cross-correlation
+
+    .. _link:
+        https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md
+    """
+
+    def _conv_forward(self, input: Tensor, weight: Tensor, bias: Optional[Tensor]):
+        _input = input.permute(0, 3, 1, 2)
+        return super()._conv_forward(_input, weight, bias).permute(0, 2, 3, 1)
+
+
+class ChannelsLastConv3d(Conv3d):
+    __doc__ = r"""Applies a 3D convolution over an input signal composed of several input
+    planes. This implementation uses channel last implementation, which assumes
+    that the last dimension of the input and output tensors is the one corresponding to channels.
+
+    In the simplest case, the output value of the layer with input size :math:`(N, D, H, W, C_{in})`
+    and output :math:`(N, D_{out}, H_{out}, W_{out}, C_{out})` can be precisely described as:
+
+    .. math::
+        out(N_i, C_{out_j}) = bias(C_{out_j}) +
+                                \sum_{k = 0}^{C_{in} - 1} weight(C_{out_j}, k) \star input(N_i, k)
+
+    where :math:`\star` is the valid 3D `cross-correlation`_ operator
+    """ + r"""
+
+    This module supports :ref:`TensorFloat32<tf32_on_ampere>`.
+
+    On certain ROCm devices, when using float16 inputs this module will use :ref:`different precision<fp16_on_mi200>` for backward.
+
+    * :attr:`stride` controls the stride for the cross-correlation.
+
+    * :attr:`padding` controls the amount of padding applied to the input. It
+      can be either a string {{'valid', 'same'}} or a tuple of ints giving the
+      amount of implicit padding applied on both sides.
+
+    * :attr:`dilation` controls the spacing between the kernel points; also known as the à trous algorithm.
+      It is harder to describe, but this `link`_ has a nice visualization of what :attr:`dilation` does.
+
+    {groups_note}
+
+    The parameters :attr:`kernel_size`, :attr:`stride`, :attr:`padding`, :attr:`dilation` can either be:
+
+        - a single ``int`` -- in which case the same value is used for the depth, height and width dimension
+        - a ``tuple`` of three ints -- in which case, the first `int` is used for the depth dimension,
+          the second `int` for the height dimension and the third `int` for the width dimension
+
+    Note:
+        {depthwise_separable_note}
+
+    Note:
+        {cudnn_reproducibility_note}
+
+    Note:
+        ``padding='valid'`` is the same as no padding. ``padding='same'`` pads
+        the input so the output has the shape as the input. However, this mode
+        doesn't support any stride values other than 1.
+
+    Note:
+        This module supports complex data types i.e. ``complex32, complex64, complex128``.
+
+    Args:
+        in_channels (int): Number of channels in the input image
+        out_channels (int): Number of channels produced by the convolution
+        kernel_size (int or tuple): Size of the convolving kernel
+        stride (int or tuple, optional): Stride of the convolution. Default: 1
+        padding (int, tuple or str, optional): Padding added to all six sides of
+            the input. Default: 0
+        padding_mode (str, optional): ``'zeros'``, ``'reflect'``, ``'replicate'`` or ``'circular'``. Default: ``'zeros'``
+        dilation (int or tuple, optional): Spacing between kernel elements. Default: 1
+        groups (int, optional): Number of blocked connections from input channels to output channels. Default: 1
+        bias (bool, optional): If ``True``, adds a learnable bias to the output. Default: ``True``
+    """.format(**reproducibility_notes, **convolution_notes_channels_last) + r"""
+
+    Shape:
+        - Input: :math:`(N, D_{in}, H_{in}, W_{in}, C_{in})` or :math:`(D_{in}, H_{in}, W_{in}, C_{in})`
+        - Output: :math:`(N, D_{out}, H_{out}, W_{out}, C_{out})` or :math:`(D_{out}, H_{out}, W_{out}, C_{out})`,
+          where
+
+          .. math::
+              D_{out} = \left\lfloor\frac{D_{in} + 2 \times \text{padding}[0] - \text{dilation}[0]
+                    \times (\text{kernel\_size}[0] - 1) - 1}{\text{stride}[0]} + 1\right\rfloor
+
+          .. math::
+              H_{out} = \left\lfloor\frac{H_{in} + 2 \times \text{padding}[1] - \text{dilation}[1]
+                    \times (\text{kernel\_size}[1] - 1) - 1}{\text{stride}[1]} + 1\right\rfloor
+
+          .. math::
+              W_{out} = \left\lfloor\frac{W_{in} + 2 \times \text{padding}[2] - \text{dilation}[2]
+                    \times (\text{kernel\_size}[2] - 1) - 1}{\text{stride}[2]} + 1\right\rfloor
+
+    Attributes:
+        weight (Tensor): the learnable weights of the module of shape
+                         :math:`(\text{out\_channels}, \frac{\text{in\_channels}}{\text{groups}},`
+                         :math:`\text{kernel\_size[0]}, \text{kernel\_size[1]}, \text{kernel\_size[2]})`.
+                         The values of these weights are sampled from
+                         :math:`\mathcal{U}(-\sqrt{k}, \sqrt{k})` where
+                         :math:`k = \frac{groups}{C_\text{in} * \prod_{i=0}^{2}\text{kernel\_size}[i]}`
+        bias (Tensor):   the learnable bias of the module of shape (out_channels). If :attr:`bias` is ``True``,
+                         then the values of these weights are
+                         sampled from :math:`\mathcal{U}(-\sqrt{k}, \sqrt{k})` where
+                         :math:`k = \frac{groups}{C_\text{in} * \prod_{i=0}^{2}\text{kernel\_size}[i]}`
+
+    Examples::
+
+        >>> # With square kernels and equal stride
+        >>> m = nn.ChannelsLastConv3d(16, 33, 3, stride=2)
+        >>> # non-square kernels and unequal stride and with padding
+        >>> m = nn.ChannelsLastConv3d(16, 33, (3, 5, 2), stride=(2, 1, 1), padding=(4, 2, 0))
+        >>> input = torch.randn(20, 10, 50, 100, 16)
+        >>> output = m(input)
+
+    .. _cross-correlation:
+        https://en.wikipedia.org/wiki/Cross-correlation
+
+    .. _link:
+        https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md
+    """
+
+    def _conv_forward(self, input: Tensor, weight: Tensor, bias: Optional[Tensor]):
+        _input = input.permute(0, 4, 1, 2, 3)
+        return super()._conv_forward(_input, weight, bias).permute(0, 2, 3, 4, 1)

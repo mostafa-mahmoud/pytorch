@@ -843,6 +843,132 @@ class TestConvolutionNN(NNTestCase):
         for s, k, g, d in product(strides, kernel_sizes, groups, dilates):
             _test_conv2d(s, k, g, d)
 
+    def test_channels_last_conv1d(self):
+        batch = 5
+        length = 43
+        in_channels = [2, 30]
+        out_channels = [3, 12]
+        kernel_sizes = [2, 5]
+        strides = [1, 2]
+        paddings = [0, 1, 3]
+        dilations = [1, 2, 3]
+        biases = [True, False]
+        groups = [1, None]
+
+        for in_ch, out_ch, kernel, stride, padding, dilation, bias, group in itertools.product(
+            in_channels,
+            out_channels,
+            kernel_sizes,
+            strides,
+            paddings,
+            dilations,
+            biases,
+            groups,
+        ):
+            group = group or math.gcd(in_ch, out_ch)
+
+            input_tensor_standard = torch.randn(batch, in_ch, length)
+            input_tensor_custom = input_tensor_standard.permute(0, 2, 1)
+
+            conv_standard = nn.Conv1d(
+                in_ch, out_ch, kernel, stride, padding, dilation, group, bias
+            )
+            conv_channels_last = nn.ChannelsLastConv1d(
+                in_ch, out_ch, kernel, stride, padding, dilation, group, bias
+            )
+            init.uniform_(conv_standard.weight)
+            if bias:
+                init.uniform_(conv_standard.bias)
+            conv_channels_last.load_state_dict(conv_standard.state_dict())
+            output_standard = conv_standard(input_tensor_standard)
+            output_custom = conv_channels_last(input_tensor_custom).permute(0, 2, 1)
+
+            torch.testing.assert_close(output_standard, output_custom)
+
+    def test_channels_last_conv2d(self):
+        batch = 4
+        height, width = 17, 31
+        in_channels = [2, 30]
+        out_channels = [3, 12]
+        kernel_sizes = [2, 5]
+        strides = [1, 2]
+        paddings = [0, 1, 3]
+        dilations = [1, 2, 3]
+        biases = [True, False]
+        groups = [1, None]
+
+        for in_ch, out_ch, kernel, stride, padding, dilation, bias, group in itertools.product(
+            in_channels,
+            out_channels,
+            kernel_sizes,
+            strides,
+            paddings,
+            dilations,
+            biases,
+            groups,
+        ):
+            group = group or math.gcd(in_ch, out_ch)
+            input_tensor_standard = torch.randn(batch, in_ch, height, width)
+            input_tensor_custom = input_tensor_standard.permute(0, 2, 3, 1)
+
+            conv_standard = nn.Conv2d(
+                in_ch, out_ch, kernel, stride, padding, dilation, group, bias
+            )
+            conv_channels_last = nn.ChannelsLastConv2d(
+                in_ch, out_ch, kernel, stride, padding, dilation, group, bias
+            )
+            init.uniform_(conv_standard.weight)
+            if bias:
+                init.uniform_(conv_standard.bias)
+            conv_channels_last.load_state_dict(conv_standard.state_dict())
+
+            output_standard = conv_standard(input_tensor_standard)
+            output_custom = conv_channels_last(input_tensor_custom).permute(0, 3, 1, 2)
+
+            torch.testing.assert_close(output_standard, output_custom)
+
+    def test_channels_last_conv3d(self):
+        batch = 3
+        depth, height, width = 23, 31, 17
+        in_channels = [2, 30]
+        out_channels = [3, 12]
+        kernel_sizes = [2, 5]
+        strides = [1, 2]
+        paddings = [0, 1, 3]
+        dilations = [1, 2, 3]
+        biases = [True, False]
+        groups = [1, None]
+
+        for in_ch, out_ch, kernel, stride, padding, dilation, bias, group in itertools.product(
+            in_channels,
+            out_channels,
+            kernel_sizes,
+            strides,
+            paddings,
+            dilations,
+            biases,
+            groups,
+        ):
+            group = group or math.gcd(in_ch, out_ch)
+            input_tensor_standard = torch.randn(batch, in_ch, depth, height, width)
+            input_tensor_custom = input_tensor_standard.permute(0, 2, 3, 4, 1)
+
+            conv_standard = nn.Conv3d(
+                in_ch, out_ch, kernel, stride, padding, dilation, group, bias
+            )
+            conv_channels_last = nn.ChannelsLastConv3d(
+                in_ch, out_ch, kernel, stride, padding, dilation, group, bias
+            )
+            init.uniform_(conv_standard.weight)
+            if bias:
+                init.uniform_(conv_standard.bias)
+            conv_channels_last.load_state_dict(conv_standard.state_dict())
+
+            output_standard = conv_standard(input_tensor_standard)
+            output_custom = conv_channels_last(input_tensor_custom).permute(0, 4, 1, 2, 3)
+
+            torch.testing.assert_close(output_standard, output_custom)
+
 
 class TestConvolutionNNDeviceType(NNTestCase):
     def run_conv_double_back_test(self, kern, stride, padding, chan_in, chan_out, batch_size,
